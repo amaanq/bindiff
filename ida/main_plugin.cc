@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -242,12 +243,19 @@ absl::StatusOr<bool> ExportIdbs() {
     auto options =
         IdbExporter::Options()
             .set_export_dir(secondary_temp_dir)
-            .set_ida_dir(idadir(/*subdir=*/nullptr))
+            .set_ida_dir("/run/current-system/sw/bin")
             .set_alsologtostderr(Plugin::instance()->alsologtostderr());
     if (config.log().to_file()) {
       options.set_log_filename(
           GetLogFilename(config, "bindiff_idapro_secondary.log"));
     }
+    msg("[BinDiff] IDA dir: %s\n", options.ida_dir.c_str());
+    msg("[BinDiff] Export dir: %s\n", options.export_dir.c_str());
+    msg("[BinDiff] Secondary IDB: %s\n", secondary_idb_path.c_str());
+    msg("[BinDiff] Will execute: %s/ida64\n", options.ida_dir.c_str());
+    msg("[BinDiff] Expected output: %s/%s.BinExport\n",
+        options.export_dir.c_str(),
+        ReplaceFileExtension(Basename(secondary_idb_path), "").c_str());
     IdbExporter exporter(options);
     exporter.AddDatabase(secondary_idb_path);
 
@@ -268,10 +276,58 @@ absl::StatusOr<bool> ExportIdbs() {
     }
 
     export_thread.join();
+    msg("[BinDiff] Secondary export status: %s\n", status.ok() ? "OK" : status.message().data());
     if (!status.ok()) {
+      msg("[BinDiff] Export failed with error: %s\n", status.message().data());
       return absl::UnknownError(absl::StrCat(
           "Export of the secondary database failed: ", status.message()));
     }
+
+    // Debug: List what files were actually created
+    msg("[BinDiff] Checking secondary temp dir contents...\n");
+    DIR* dir = opendir(secondary_temp_dir.c_str());
+    if (dir) {
+      struct dirent* entry;
+      while ((entry = readdir(dir)) != nullptr) {
+        msg("[BinDiff]   Found file: %s\n", entry->d_name);
+      }
+      closedir(dir);
+    } else {
+      msg("[BinDiff]   Could not open directory: %s\n", secondary_temp_dir.c_str());
+    }
+
+    // Also check if the file exists at the expected path
+    std::string expected_file = JoinPath(secondary_temp_dir,
+        ReplaceFileExtension(Basename(secondary_idb_path), ".BinExport"));
+    msg("[BinDiff] Checking for expected file: %s\n", expected_file.c_str());
+    msg("[BinDiff] File exists: %s\n", FileExists(expected_file) ? "YES" : "NO");
+
+    // Check parent /tmp/bindiff directory
+    msg("[BinDiff] Listing /tmp/bindiff contents:\n");
+    DIR* parent_dir = opendir("/tmp/bindiff");
+    if (parent_dir) {
+      struct dirent* entry;
+      while ((entry = readdir(parent_dir)) != nullptr) {
+        msg("[BinDiff]   /tmp/bindiff/%s\n", entry->d_name);
+      }
+      closedir(parent_dir);
+    }
+
+    // Check if there's a log file from the secondary export
+    if (config.log().to_file()) {
+      std::string log_path = GetLogFilename(config, "bindiff_idapro_secondary.log");
+      msg("[BinDiff] Checking log file: %s\n", log_path.c_str());
+      if (FileExists(log_path)) {
+        msg("[BinDiff] Log file exists, check it for errors\n");
+      } else {
+        msg("[BinDiff] Log file does not exist\n");
+      }
+    }
+
+    // The issue is likely that the spawned IDA doesn't have BinExport plugin
+    // Let's check if plugins are being loaded
+    msg("[BinDiff] NOTE: Spawned IDA must have BinExport plugin in plugins directory\n");
+    msg("[BinDiff] Plugin path should be: ~/.idapro/plugins/binexport12_ida64.so\n");
   }
   return true;
 }
@@ -465,8 +521,11 @@ absl::StatusOr<bool> DiffAddressRange(ea_t start_address_source,
         "Exporting the primary (this) database failed.\n"
         "Please check whether the BinExport plugin is installed correctly.");
   }
+  std::string secondary_search_dir = JoinPath(temp_dir, "secondary");
+  msg("[BinDiff] Looking for secondary export in: %s\n", secondary_search_dir.c_str());
   const std::string filename2 =
-      FindFile(JoinPath(temp_dir, "secondary"), ".BinExport");
+      FindFile(secondary_search_dir, ".BinExport");
+  msg("[BinDiff] Secondary export file found: %s\n", filename2.empty() ? "(none)" : filename2.c_str());
   if (filename2.empty()) {
     return absl::FailedPreconditionError(
         "Exporting the secondary database failed. "
