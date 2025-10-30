@@ -141,6 +141,9 @@
 
                 if [ -f "build/bindiff" ]; then
                   cp build/bindiff $out/bin/
+
+                  wrapProgram $out/bin/bindiff \
+                    --prefix PATH : "/run/current-system/sw/bin"
                 fi
 
                 if [ -d "build/bindiff-prefix/bin" ]; then
